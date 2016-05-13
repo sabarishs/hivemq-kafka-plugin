@@ -14,10 +14,14 @@ I tested this on my macbook pro (Intel(R) Core(TM) i7-4870HQ CPU @ 2.50GHz (Quad
 #### Good defaults
 By default, does synchronous puts to Kafka with full acks. This means message delivery to Kafka is ensured as soon as message is received in the HiveMQ broker. This is ofcourse, the slowest mode, but gives the best guarantee.
 
+#### Mapping from MQTT topics to Kafka message keys
+Use the properties to control which substring of the topic to use as the message keys
+
 ## Before you use
 
 - Ensure you are using QoS 1 or 2. This plugin registers for publish receieved events to detect incoming messages
 - Right now there is no special handling for dups
+- The key for every record put to Kafka is derived from the MQTT topic name. This is typically the case with MQTT, that we will have different subscription topics per device/device-group that is sending the events. This way the messages are never parsed for determining the key
 - By default, every put to kafka is sychronous and acked all. If loss of messages is not a deal breaker you can turn async.puts to true. You might also want to change acks mode to 0 or 1 depending on how it works for you
 
 ## How to deploy?
