@@ -11,6 +11,9 @@ Out of order events can be a pitb. By using a combination of QoS 1/2 (MQTT order
 
 I tested this on my macbook pro (Intel(R) Core(TM) i7-4870HQ CPU @ 2.50GHz (Quad Core), 16 GB RAM) with HiveMQ, MQTT client, Kafka running on the same instance. Without pushing to Kafka, HiveMQ is processing 10k messages per second. With Kafka push, HiveMQ processes 10k messages in 1.250 seconds. So that is a 250 ms overhead for every 10k messages. This is time it takes to push to Kafka.
 
+#### Performance
+Performance without forsaking ordering guarantees. This plugin cuts down on one extra network hop.
+
 #### Good defaults
 By default, does synchronous puts to Kafka with full acks. This means message delivery to Kafka is ensured as soon as message is received in the HiveMQ broker. This is ofcourse, the slowest mode, but gives the best guarantee.
 
@@ -20,7 +23,6 @@ Use the properties to control which substring of the topic to use as the message
 ## Before you use
 
 - Ensure you are using QoS 1 or 2. This plugin registers for publish receieved events to detect incoming messages
-- Right now there is no special handling for dups
 - The key for every record put to Kafka is derived from the MQTT topic name. This is typically the case with MQTT, that we will have different subscription topics per device/device-group that is sending the events. This way the messages are never parsed for determining the key
 - By default, every put to kafka is sychronous and acked all. If loss of messages is not a deal breaker you can turn async.puts to true. You might also want to change acks mode to 0 or 1 depending on how it works for you
 
@@ -35,6 +37,7 @@ Use the properties to control which substring of the topic to use as the message
 ## What more needs done
 
 - Right now, there is no special handling for dups. This needs to be corrected.
+  - This has been corrected. For duplicate messages part of the MQTT QoS 1 and 2 workflows, only one message is guaranteed to be pushed to Kafka.
 - Failure scenarios around Kafka put
 
 ## What are the other options
