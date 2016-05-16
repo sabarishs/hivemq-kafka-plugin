@@ -23,6 +23,7 @@ Use the properties to control which substring of the topic to use as the message
 ## Before you use
 
 - Ensure you are using QoS 1 or 2. This plugin registers for publish receieved events to detect incoming messages
+- ~~Right now dups are not handled. Both QoS 1 and 2 workflows involve duplicate messages. If not careful the same message can get delivered twice to the same consumer~~
 - The key for every record put to Kafka is derived from the MQTT topic name. This is typically the case with MQTT, that we will have different subscription topics per device/device-group that is sending the events. This way the messages are never parsed for determining the key
 - By default, every put to kafka is sychronous and acked all. If loss of messages is not a deal breaker you can turn async.puts to true. You might also want to change acks mode to 0 or 1 depending on how it works for you
 
@@ -32,11 +33,11 @@ Use the properties to control which substring of the topic to use as the message
 - maven clean package
 - copy the jar from target to each HiveMQ broker's hivemq-x.x.x/plugins
 - copy your kafka-plugin.properties to hivemq-x.x.x/plugins (the one in the jar is not used)
-- modify the properties
+- start HiveMQ
 
 ## What more needs done
 
-- Right now, there is no special handling for dups. This needs to be corrected.
+- ~~Right now, there is no special handling for dups. This needs to be corrected.~~
   - This has been corrected. For duplicate messages part of the MQTT QoS 1 and 2 workflows, only one message is guaranteed to be pushed to Kafka.
 - Failure scenarios around Kafka put
 
