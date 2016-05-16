@@ -22,6 +22,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,10 +41,15 @@ import org.slf4j.LoggerFactory;
 
 import com.hivemq.spi.PluginEntryPoint;
 import com.hivemq.spi.callback.events.OnPublishReceivedCallback;
+import com.hivemq.spi.callback.events.OnPublishSend;
 import com.hivemq.spi.callback.exception.OnPublishReceivedException;
+import com.hivemq.spi.callback.lowlevel.OnPubackSend;
+import com.hivemq.spi.callback.lowlevel.OnPubrelReceived;
 import com.hivemq.spi.callback.registry.CallbackRegistry;
 import com.hivemq.spi.config.SystemInformation;
+import com.hivemq.spi.message.PUBACK;
 import com.hivemq.spi.message.PUBLISH;
+import com.hivemq.spi.message.PUBREL;
 import com.hivemq.spi.security.ClientData;
 
 /**
@@ -53,10 +59,9 @@ import com.hivemq.spi.security.ClientData;
  */
 public class KafkaPluginMain extends PluginEntryPoint {
 
-    private static final Logger log = LoggerFactory.getLogger(KafkaPluginMain.class);
+	private static final Logger log = LoggerFactory.getLogger(KafkaPluginMain.class);
 
     private final Properties pluginProperties = new Properties();
-
 
     @Inject
     public KafkaPluginMain(SystemInformation systemInfo) throws IOException{
@@ -72,87 +77,9 @@ public class KafkaPluginMain extends PluginEntryPoint {
      */
     @PostConstruct
     public void postConstruct() {
-
         CallbackRegistry callbackRegistry = getCallbackRegistry();
-        callbackRegistry.addCallback(new OnPublishReceivedCallback() {
-			private Properties props = new Properties();
-			private KafkaProducer<String, byte[]> producer = null;
-			private AtomicInteger puts = new AtomicInteger(0);
-			private boolean asyncPuts = Boolean.valueOf(pluginProperties.getProperty("async.puts", "false"));
-			private boolean noPuts = Boolean.valueOf(pluginProperties.getProperty("no.puts", "false"));
-			private String sinkTopic = pluginProperties.getProperty("sink.topic");
-			private String clientId = pluginProperties.getProperty("client.id");
-			private String kafkaBroker = pluginProperties.getProperty("broker.url");
-			private String ackMode = pluginProperties.getProperty("acks");
-			private int lingerMs = Integer.valueOf(pluginProperties.getProperty("linger.ms", "0"));
-			private int metadataFetchTimeoutMs = Integer.valueOf(pluginProperties.getProperty("metadata.fetch.timeout.ms", "500"));
-			private int numPutRetries = Integer.valueOf(pluginProperties.getProperty("num.put.retries", "3"));
-			private String keySerializerClassName = pluginProperties.getProperty("key.serializer", StringSerializer.class.getName());
-			private String valueSerializerClassName = pluginProperties.getProperty("value.serializer", ByteArraySerializer.class.getName());
-			private String kafkaPartitionerClassName = pluginProperties.getProperty("partitioner", "org.apache.kafka.clients.producer.internals.DefaultPartitioner");
-			private boolean replaceClassloader = Boolean.valueOf(pluginProperties.getProperty("replace.classloader", "true"));
-			private int logFrequency = Integer.valueOf(pluginProperties.getProperty("log.frequency", "10000"));
-			private int[] kafkaRecordKeyRange = new int[] {
-					Integer.valueOf(pluginProperties.getProperty("kafka.record.key.start.pos", "4")),
-					Integer.valueOf(pluginProperties.getProperty("kafka.record.key.end.pos", "13"))
-			};
-			private long start = System.currentTimeMillis();
-			{
-				log.info("Instance created");
-				props.put("client.id", clientId);
-				props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBroker);
-				props.put("acks", ackMode);
-				props.put("linger.ms", lingerMs);
-				props.put("metadata.fetch.timeout.ms", metadataFetchTimeoutMs);
-				props.put("retries", numPutRetries);
-				props.put("key.serializer", keySerializerClassName);
-				props.put("value.serializer", valueSerializerClassName);
-				try {
-					Class.forName(kafkaPartitionerClassName);
-				}
-				catch (Exception e) {
-					log.error("Failed when loading partitioner", e);
-					throw new RuntimeException(e);
-				}
-				ClassLoader ccl = Thread.currentThread().getContextClassLoader();
-				if (replaceClassloader) {
-					Thread.currentThread().setContextClassLoader(null);
-				}
-				producer = new KafkaProducer<String, byte[]>(props);
-				if (replaceClassloader) {
-					Thread.currentThread().setContextClassLoader(ccl);
-				}
-			}
-			
-        	@Override
-			public int priority() {
-				return 0;
-			}
-			
-			@Override
-			public void onPublishReceived(PUBLISH message, ClientData cd) throws OnPublishReceivedException {
-				if (!noPuts) {
-					Future<RecordMetadata> f = producer.send(new ProducerRecord<String, byte[]>(sinkTopic, message.getTopic().substring(kafkaRecordKeyRange[0], kafkaRecordKeyRange[1]), message.getPayload()));
-					if (!asyncPuts) {
-						try {
-							RecordMetadata rm = f.get();
-						}
-						catch (ExecutionException | InterruptedException ee) {
-							//check offset before putting again?
-							log.error("Failed when putting to kafka", ee);
-						}
-					}
-				}
-				if (logFrequency != -1) {
-					int np = puts.incrementAndGet();
-					if (np % logFrequency == 0) {
-						log.info("Put {} in {} ms", puts, System.currentTimeMillis() - start);
-						start = System.currentTimeMillis();
-						puts.set(0);
-					}
-				}
-			}
-		});
+        KafkaPush push = new KafkaPush();
+        callbackRegistry.addCallback(push);
     }
 
     /**
@@ -160,4 +87,112 @@ public class KafkaPluginMain extends PluginEntryPoint {
      */
     public void addRetainedMessage(String topic, String message) {
     }
+    
+    public final class KafkaPush implements OnPublishReceivedCallback, OnPubackSend, OnPubrelReceived {
+    	private Properties props = new Properties();
+		private KafkaProducer<String, byte[]> producer = null;
+		private AtomicInteger puts = new AtomicInteger(0);
+		private boolean asyncPuts = Boolean.valueOf(pluginProperties.getProperty("async.puts", "false"));
+		private boolean noPuts = Boolean.valueOf(pluginProperties.getProperty("no.puts", "false"));
+		private String sinkTopic = pluginProperties.getProperty("sink.topic");
+		private String clientId = pluginProperties.getProperty("client.id");
+		private String kafkaBroker = pluginProperties.getProperty("broker.url");
+		private String ackMode = pluginProperties.getProperty("acks");
+		private int lingerMs = Integer.valueOf(pluginProperties.getProperty("linger.ms", "0"));
+		private int metadataFetchTimeoutMs = Integer.valueOf(pluginProperties.getProperty("metadata.fetch.timeout.ms", "500"));
+		private int numPutRetries = Integer.valueOf(pluginProperties.getProperty("num.put.retries", "3"));
+		private String keySerializerClassName = pluginProperties.getProperty("key.serializer", StringSerializer.class.getName());
+		private String valueSerializerClassName = pluginProperties.getProperty("value.serializer", ByteArraySerializer.class.getName());
+		private String kafkaPartitionerClassName = pluginProperties.getProperty("partitioner", "org.apache.kafka.clients.producer.internals.DefaultPartitioner");
+		private boolean replaceClassloader = Boolean.valueOf(pluginProperties.getProperty("replace.classloader", "true"));
+		private int logFrequency = Integer.valueOf(pluginProperties.getProperty("log.frequency", "10000"));
+		private int[] kafkaRecordKeyRange = new int[] {
+				Integer.valueOf(pluginProperties.getProperty("kafka.record.key.start.pos", "4")),
+				Integer.valueOf(pluginProperties.getProperty("kafka.record.key.end.pos", "13"))
+		};
+		private long start = System.currentTimeMillis();
+		private Object dummy = new Object();
+		private ConcurrentHashMap<Integer, Object> msgRegistry = new ConcurrentHashMap<Integer, Object>(1024);
+		
+		{
+			log.info("Instance created");
+			props.put("client.id", clientId);
+			props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBroker);
+			props.put("acks", ackMode);
+			props.put("linger.ms", lingerMs);
+			props.put("metadata.fetch.timeout.ms", metadataFetchTimeoutMs);
+			props.put("retries", numPutRetries);
+			props.put("key.serializer", keySerializerClassName);
+			props.put("value.serializer", valueSerializerClassName);
+			try {
+				Class.forName(kafkaPartitionerClassName);
+			}
+			catch (Exception e) {
+				log.error("Failed when loading partitioner", e);
+				throw new RuntimeException(e);
+			}
+			ClassLoader ccl = Thread.currentThread().getContextClassLoader();
+			if (replaceClassloader) {
+				Thread.currentThread().setContextClassLoader(null);
+			}
+			producer = new KafkaProducer<String, byte[]>(props);
+			if (replaceClassloader) {
+				Thread.currentThread().setContextClassLoader(ccl);
+			}
+		}
+		
+    	@Override
+		public int priority() {
+			return 0;
+		}
+		
+		@Override
+		public void onPublishReceived(PUBLISH message, ClientData cd) throws OnPublishReceivedException {
+			if (!noPuts) {
+				Integer mi = message.getMessageId();
+				boolean delivered = false;
+				//for both qos 1 and 2
+				if (message.isDuplicateDelivery()) {
+					//check against registry
+					delivered = msgRegistry.get(mi) != null;
+				}
+				if (!delivered) {
+					Future<RecordMetadata> f = producer.send(new ProducerRecord<String, byte[]>(sinkTopic, message.getTopic().substring(kafkaRecordKeyRange[0], kafkaRecordKeyRange[1]), message.getPayload()));
+					if (!asyncPuts) {
+						try {
+							RecordMetadata rm = f.get();
+							msgRegistry.put(mi, dummy);
+						}
+						catch (ExecutionException | InterruptedException ee) {
+							//check offset before putting again?
+							log.error("Failed when putting to kafka", ee);
+						}
+					}
+					else {
+						msgRegistry.put(mi, dummy);
+					}
+				}
+			}
+			if (logFrequency != -1) {
+				int np = puts.incrementAndGet();
+				if (np % logFrequency == 0) {
+					log.info("Put {} in {} ms. Size of registry {}", puts, System.currentTimeMillis() - start, msgRegistry.size());
+					start = System.currentTimeMillis();
+					puts.set(0);
+				}
+			}
+		}
+		
+		@Override
+		public void onPubrelReceived(PUBREL pubrel, ClientData clientData) {
+			//QoS 2 workflow complete. cleanup so that same message id can be reused as per MQTT spec
+			msgRegistry.remove(pubrel.getMessageId());
+		}
+
+		@Override
+		public void onPubackSend(PUBACK puback, ClientData clientData) {
+			//QoS 1 workflow complete. cleanup so that same message id can be reused as per MQTT spec
+			msgRegistry.remove(puback.getMessageId());
+		}
+	}
 }
